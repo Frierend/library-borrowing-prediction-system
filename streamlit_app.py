@@ -76,20 +76,9 @@ st.markdown("""
         background: white;
         padding: 1.5rem;
         border-radius: 12px;
-        border-left: 5px solid #667eea;
         box-shadow: 0 4px 15px rgba(0,0,0,0.1);
         margin: 1rem 0;
-    }
-    
-    .sample-button {
-        margin: 0.25rem;
-        padding: 0.5rem 1rem;
-        border-radius: 8px;
-        border: 2px solid;
-        background: transparent;
-        cursor: pointer;
-        font-weight: 600;
-        transition: all 0.3s ease;
+        text-align: center;
     }
     
     .feature-importance-card {
@@ -130,6 +119,11 @@ st.markdown("""
         border-top: 1px solid #dee2e6;
         margin-top: 3rem;
     }
+
+    /* Responsive tweak so the metric cards wrap on narrow screens */
+    @media (max-width: 900px) {
+        .metric-flex { flex-direction: column; }
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -138,13 +132,10 @@ def load_model_components():
     """Load all model components with error handling"""
     try:
         model_path = 'models/'
-        
-        # Check if models directory exists
         if not os.path.exists(model_path):
             st.error("❌ Models directory not found. Please create 'models/' folder and add your .pkl files.")
             return None, None, None, None, None
         
-        # Load all components
         model = joblib.load(os.path.join(model_path, 'wine_quality_model.pkl'))
         imputer = joblib.load(os.path.join(model_path, 'wine_imputer.pkl'))
         scaler = joblib.load(os.path.join(model_path, 'wine_scaler.pkl'))
@@ -152,20 +143,6 @@ def load_model_components():
         metadata = joblib.load(os.path.join(model_path, 'model_metadata.pkl'))
         
         return model, imputer, scaler, feature_names, metadata
-        
-    except FileNotFoundError as e:
-        st.error(f"❌ Model file not found: {str(e)}")
-        st.info("Please ensure all .pkl files are in the 'models/' directory:")
-        st.code("""
-        models/
-        ├── wine_quality_model.pkl
-        ├── wine_imputer.pkl
-        ├── wine_scaler.pkl
-        ├── feature_names.pkl
-        └── model_metadata.pkl
-        """)
-        return None, None, None, None, None
-        
     except Exception as e:
         st.error(f"❌ Error loading model: {str(e)}")
         return None, None, None, None, None
@@ -173,33 +150,30 @@ def load_model_components():
 def predict_wine_quality(features, model, imputer, scaler, feature_names, metadata):
     """Make wine quality prediction with error handling"""
     try:
-        # Create DataFrame from input features
         df_sample = pd.DataFrame([features], columns=feature_names)
+        df_imputed = pd.DataFrame(imputer.transform(df_sample), columns=feature_names)
         
-        # Apply imputation for missing values
-        df_imputed = pd.DataFrame(
-            imputer.transform(df_sample), 
-            columns=feature_names
-        )
-        
-        # Apply scaling if the model requires it
         if metadata.get('uses_scaling', False):
             df_processed = scaler.transform(df_imputed)
         else:
             df_processed = df_imputed
         
-        # Make prediction
         prediction = model.predict(df_processed)[0]
-        confidence = model.predict_proba(df_processed)[0][1]
+        # If predict_proba returns two cols, assume [prob_bad, prob_good]
+        proba = model.predict_proba(df_processed)[0]
+        # try to get positive class probability (if model trained with 0/1)
+        if len(proba) == 2:
+            confidence = proba[1]
+        else:
+            # fallback: max probability
+            confidence = np.max(proba)
         
-        # Get feature importance if available
         feature_importance = {}
         if hasattr(model, 'feature_importances_'):
             for i, feature in enumerate(feature_names):
                 feature_importance[feature] = float(model.feature_importances_[i])
         
         return prediction, confidence, feature_importance
-        
     except Exception as e:
         st.error(f"❌ Prediction error: {str(e)}")
         return None, None, None
@@ -208,14 +182,9 @@ def create_feature_importance_chart(feature_importance):
     """Create interactive feature importance chart"""
     if not feature_importance:
         return None
-    
-    # Sort features by importance and get top 8
     sorted_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:8]
-    
-    # Prepare data for plotting
     feature_names_clean = []
     importance_values = []
-    
     name_mapping = {
         'fixed_acidity': 'Fixed Acidity',
         'volatile_acidity': 'Volatile Acidity',
@@ -229,13 +198,10 @@ def create_feature_importance_chart(feature_importance):
         'sulphates': 'Sulphates',
         'alcohol': 'Alcohol Content'
     }
-    
     for feature, importance in sorted_features:
         clean_name = name_mapping.get(feature, feature.replace('_', ' ').title())
         feature_names_clean.append(clean_name)
         importance_values.append(importance)
-    
-    # Create horizontal bar chart
     fig = go.Figure(data=[
         go.Bar(
             y=feature_names_clean,
@@ -251,13 +217,8 @@ def create_feature_importance_chart(feature_importance):
             textposition='outside'
         )
     ])
-    
     fig.update_layout(
-        title={
-            'text': "🔍 Key Quality Indicators",
-            'x': 0.5,
-            'font': {'size': 20}
-        },
+        title={'text': "🔍 Key Quality Indicators", 'x': 0.5, 'font': {'size': 20}},
         xaxis_title="Feature Importance",
         yaxis_title="Wine Characteristics",
         height=400,
@@ -265,39 +226,47 @@ def create_feature_importance_chart(feature_importance):
         plot_bgcolor='rgba(0,0,0,0)',
         paper_bgcolor='rgba(0,0,0,0)'
     )
-    
     return fig
 
 def get_risk_assessment(prediction, confidence):
-    """Get risk level and recommendation"""
-    if prediction == 1:  # Good quality
+    """Get risk level and recommendation along with emoji and hex colors"""
+    # confidence is expected 0..1
+    if prediction == 1:
         if confidence >= 0.8:
-            risk_level = "Low"
-            risk_color = "🟢"
+            return ("Low", "🟢", "#28a745", "APPROVE", "🟢", "#28a745")
         elif confidence >= 0.65:
-            risk_level = "Medium"
-            risk_color = "🟡"
+            return ("Medium", "🟡", "#ffc107", "APPROVE", "🟢", "#28a745")
         else:
-            risk_level = "High"
-            risk_color = "🟠"
-        recommendation = "APPROVE"
-        rec_color = "🟢"
-    else:  # Poor quality
+            return ("High", "🟠", "#fd7e14", "APPROVE", "🟢", "#28a745")
+    else:
         if confidence <= 0.4:
-            risk_level = "High"
-            risk_color = "🔴"
+            return ("High", "🔴", "#dc3545", "REJECT", "🔴", "#dc3545")
         else:
-            risk_level = "Medium"
-            risk_color = "🟡"
-        recommendation = "REJECT"
-        rec_color = "🔴"
-    
-    return risk_level, risk_color, recommendation, rec_color
+            return ("Medium", "🟡", "#ffc107", "REJECT", "🔴", "#dc3545")
+
+def render_metric_card_html(title, emoji, value, hex_color, height_px=150):
+    """Return HTML for a single metric card (used inside the flexbox layout)."""
+    return f"""
+    <div style="
+        flex: 1;
+        background-color: #111827;
+        border-radius: 12px;
+        padding: 25px;
+        text-align: center;
+        border: 2px solid {hex_color};
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        height: {height_px}px;
+        min-width: 180px;
+        ">
+        <div style="font-size: 18px; font-weight: 600; color: #ffffff; margin-bottom: 8px;">{title}</div>
+        <div style="font-size: 24px; font-weight: 700; color: {hex_color};">{emoji if emoji else ''}</div>
+        <div style="font-size: 26px; font-weight: 700; color: #2c3e50; margin-top: 8px;">{value}</div>
+    </div>
+    """
 
 def main():
-    """Main application function"""
-    
-    # Header
     st.markdown("""
     <div class="main-header">
         <h1>🍷 Wine Quality Predictor</h1>
@@ -305,17 +274,14 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Load model components
     model, imputer, scaler, feature_names, metadata = load_model_components()
-    
     if model is None:
         st.stop()
     
-    # Sidebar for information and sample data
+    # Sidebar
     with st.sidebar:
         st.header("📊 Sample Wine Data")
         st.markdown("Click to load sample data for testing:")
-        
         sample_data = {
             "🍷 Premium Wine": {
                 'values': [7.3, 0.45, 0.36, 5.4, 0.052, 16, 42, 0.9956, 3.32, 0.75, 11.8],
@@ -333,12 +299,10 @@ def main():
                 'color': '#dc3545'
             }
         }
-        
         for sample_name, sample_info in sample_data.items():
             if st.button(sample_name, key=sample_name):
                 st.session_state.sample_values = sample_info['values']
                 st.success(f"✅ {sample_name} data loaded!")
-        
         st.markdown("---")
         st.markdown("### 📈 Model Information")
         st.info(f"""
@@ -347,34 +311,22 @@ def main():
         **Features**: {len(feature_names)} wine characteristics
         **Quality Threshold**: Rating ≥ 7
         """)
-        
         st.markdown("### 🎯 How to Use")
         st.markdown("""
-        1. **Input wine measurements** in the form
-        2. **Click 'Analyze Wine Quality'**
-        3. **Review the prediction** and confidence
-        4. **Check feature importance** to understand key factors
+        1. Input wine measurements in the form.
+        2. Click 'Analyze Wine Quality'.
+        3. Review the prediction and confidence.
+        4. Check feature importance to understand key factors.
         """)
     
-    # Main content area
+    # Main layout
     col1, col2 = st.columns([1.2, 1])
-    
     with col1:
         st.header("🧪 Wine Sample Analysis")
-        
-        # Get default values from session state or use defaults
-        if 'sample_values' in st.session_state:
-            default_values = st.session_state.sample_values
-        else:
-            default_values = [7.4, 0.70, 0.00, 1.9, 0.076, 11, 34, 0.9978, 3.51, 0.56, 9.4]
-        
-        # Input form
+        default_values = st.session_state.get('sample_values', [7.4, 0.70, 0.00, 1.9, 0.076, 11, 34, 0.9978, 3.51, 0.56, 9.4])
         with st.form("wine_analysis_form"):
             st.markdown("### 📝 Enter Wine Characteristics")
-            
-            # Create two columns for inputs
             input_col1, input_col2 = st.columns(2)
-            
             inputs = []
             input_configs = [
                 ("Fixed Acidity (g/L)", 0.1, "%.1f", 4.0, 20.0),
@@ -389,10 +341,8 @@ def main():
                 ("Sulphates (g/L)", 0.01, "%.2f", 0.0, 2.0),
                 ("Alcohol Content (%)", 0.1, "%.1f", 8.0, 16.0)
             ]
-            
             for i, (label, step, format_str, min_val, max_val) in enumerate(input_configs):
                 col = input_col1 if i % 2 == 0 else input_col2
-                
                 with col:
                     value = st.number_input(
                         label,
@@ -401,21 +351,13 @@ def main():
                         value=float(default_values[i]),
                         step=step,
                         format=format_str,
-                        key=f"input_{i}",
-                        help=f"Typical range: {min_val} - {max_val}"
+                        key=f"input_{i}"
                     )
                     inputs.append(value)
-            
-            # Analysis button
-            st.markdown("### 🔬 Run Analysis")
             submitted = st.form_submit_button("🔍 Analyze Wine Quality", type="primary")
-            
             if submitted:
                 with st.spinner("🔬 Analyzing wine sample..."):
-                    prediction, confidence, feature_importance = predict_wine_quality(
-                        inputs, model, imputer, scaler, feature_names, metadata
-                    )
-                    
+                    prediction, confidence, feature_importance = predict_wine_quality(inputs, model, imputer, scaler, feature_names, metadata)
                     if prediction is not None:
                         st.session_state.analysis_results = {
                             'prediction': prediction,
@@ -430,116 +372,77 @@ def main():
     
     with col2:
         st.header("📊 Analysis Results")
-        
         if 'analysis_results' in st.session_state:
             results = st.session_state.analysis_results
-            
             prediction = results['prediction']
             confidence = results['confidence']
             feature_importance = results['feature_importance']
             timestamp = results['timestamp']
-            
             confidence_percent = round(confidence * 100)
-            
-            # Main result display
             if prediction == 1:
                 st.markdown(f"""
                 <div class="good-quality">
                     <h2>✅ Premium Quality Wine</h2>
-                    <p style="font-size: 1.2rem; margin: 1rem 0;">
-                        This wine sample <strong>meets premium quality standards</strong> 
-                        and is <strong>approved</strong> for boutique production.
-                    </p>
-                    <h3 style="font-size: 2rem; margin-top: 1rem;">
-                        Confidence: {confidence_percent}%
-                    </h3>
+                    <p>This wine sample <strong>meets premium quality standards</strong>.</p>
+                    <h3>Confidence: {confidence_percent}%</h3>
                 </div>
                 """, unsafe_allow_html=True)
             else:
                 st.markdown(f"""
                 <div class="poor-quality">
                     <h2>❌ Below Premium Standards</h2>
-                    <p style="font-size: 1.2rem; margin: 1rem 0;">
-                        This wine sample <strong>does not meet</strong> premium quality standards 
-                        and requires <strong>improvement</strong> before approval.
-                    </p>
-                    <h3 style="font-size: 2rem; margin-top: 1rem;">
-                        Confidence: {confidence_percent}%
-                    </h3>
+                    <p>This wine sample <strong>does not meet</strong> premium standards.</p>
+                    <h3>Confidence: {confidence_percent}%</h3>
                 </div>
                 """, unsafe_allow_html=True)
-            
-            # Risk assessment and recommendations
-            risk_level, risk_color, recommendation, rec_color = get_risk_assessment(prediction, confidence)
-            
-            # Display metrics
-            metric_col1, metric_col2 = st.columns(2)
-            
-            with metric_col1:
-                st.markdown(f"""
-                <div class="metric-card">
-                    <h3>{risk_color} Risk Level</h3>
-                    <h2 style="color: #2c3e50; margin: 0;">{risk_level}</h2>
+
+            # --- NEW: aligned metric cards with dynamic colors ---
+            (risk_level, risk_emoji, risk_hex,
+             recommendation, rec_emoji, rec_hex) = get_risk_assessment(prediction, confidence)
+
+            # Build HTML for both cards and render inside a flex container
+            risk_card_html = render_metric_card_html("Risk Level", risk_emoji, risk_level, risk_hex)
+            rec_card_html = render_metric_card_html("Recommendation", rec_emoji, recommendation, rec_hex)
+
+            st.markdown(
+                f"""
+                <div class="metric-flex" style="display:flex; gap: 20px; align-items: stretch; margin-top: 20px;">
+                    {risk_card_html}
+                    {rec_card_html}
                 </div>
-                """, unsafe_allow_html=True)
-            
-            with metric_col2:
-                st.markdown(f"""
-                <div class="metric-card">
-                    <h3>{rec_color} Recommendation</h3>
-                    <h2 style="color: #2c3e50; margin: 0;">{recommendation}</h2>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            # Feature importance visualization
+                """,
+                unsafe_allow_html=True,
+            )
+            # --- end metric cards ---
+
             if feature_importance:
                 st.markdown('<div class="feature-importance-card">', unsafe_allow_html=True)
                 fig = create_feature_importance_chart(feature_importance)
                 if fig:
                     st.plotly_chart(fig, use_container_width=True)
                 st.markdown('</div>', unsafe_allow_html=True)
-            
-            # Analysis details
+
             st.markdown("---")
             st.markdown("### 📋 Analysis Details")
-            
             detail_col1, detail_col2 = st.columns(2)
-            
             with detail_col1:
                 st.metric("Quality Score", f"{confidence:.3f}")
                 st.metric("Model Accuracy", "85%+")
-            
             with detail_col2:
                 st.metric("Analysis Time", f"{timestamp.strftime('%H:%M:%S')}")
                 st.metric("Date", f"{timestamp.strftime('%Y-%m-%d')}")
-            
         else:
             st.markdown("""
             <div class="waiting-result">
                 <h3>⏳ Waiting for Analysis</h3>
-                <p>Enter wine sample data and click 'Analyze Wine Quality' to see results</p>
+                <p>Enter wine data and click 'Analyze Wine Quality' to see results</p>
             </div>
             """, unsafe_allow_html=True)
-            
-            st.markdown("### 🎯 Expected Output")
-            st.info("""
-            **Quality Assessment**: Good Quality ✅ or Below Standards ❌
-            
-            **Confidence Score**: Reliability percentage (0-100%)
-            
-            **Risk Level**: Low 🟢 | Medium 🟡 | High 🔴
-            
-            **Recommendation**: APPROVE or REJECT
-            
-            **Feature Analysis**: Key factors affecting quality
-            """)
     
-    # Footer
     st.markdown("""
     <div class="footer">
         <p><strong>🍷 Wine Quality Predictor</strong></p>
         <p>Powered by Machine Learning | Built for Mr. Sanborn's Boutique Winery</p>
-        <p><em>Professional quality assessment tool for consistent wine standards</em></p>
     </div>
     """, unsafe_allow_html=True)
 
